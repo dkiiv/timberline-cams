@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Timberline Cams — live wall + timelapse</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:#0b0d10; color:#e6e8eb;
+         font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:6px; }
+  h1 { font-size:16px; margin:0 8px 0 0; font-weight:600; letter-spacing:.02em; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; display:inline-block;
+         animation:pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity:.25 } }
+  select, button { background:#161a20; color:#e6e8eb; border:1px solid #2c333c; border-radius:6px;
+                   padding:5px 9px; font:inherit; cursor:pointer; }
+  button:hover, select:hover { border-color:#3a434e; }
+  .hint { color:#8b949e; font-size:12px; margin:0 0 14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(430px,1fr)); gap:14px; }
+  .cam { background:#11151a; border:1px solid #22282f; border-radius:10px; overflow:hidden; }
+  .bar { display:flex; justify-content:space-between; align-items:center; gap:8px;
+         padding:7px 11px; font-size:13px; }
+  .bar b { font-weight:600; }
+  .right { display:flex; align-items:center; gap:7px; }
+  .age { font-size:11px; padding:1px 7px; border-radius:20px; background:#1d2126; color:#8b949e;
+         font-variant-numeric:tabular-nums; }
+  .age.fresh { background:#12261a; color:#3fb950; }
+  .age.stale { background:#2a1d12; color:#d29922; }
+  .age.dead  { background:#2d1416; color:#f85149; }
+  .buf { font-size:11px; color:#6e7681; font-variant-numeric:tabular-nums; }
+  .stage { position:relative; cursor:zoom-in; }
+  img.main { display:block; width:100%; background:#000; aspect-ratio:3/2; object-fit:contain; }
+  .badge { position:absolute; left:8px; top:8px; font-size:11px; padding:2px 8px; border-radius:4px;
+           background:rgba(0,0,0,.72); color:#ffd33d; display:none; }
+  .badge.on { display:block; }
+  .strip { display:flex; gap:2px; overflow-x:auto; padding:6px; background:#0d1117;
+           scrollbar-width:thin; min-height:44px; }
+  .strip canvas { height:34px; width:auto; flex:0 0 auto; border-radius:2px; cursor:pointer;
+                  opacity:.65; }
+  .strip canvas:hover, .strip canvas.sel { opacity:1; outline:1px solid #58a6ff; }
+  .ctl { display:flex; gap:6px; padding:0 6px 7px; background:#0d1117; }
+  .ctl button { font-size:11px; padding:3px 8px; }
+  .expand { font-size:11px; color:#58a6ff; text-decoration:none; }
+  .cam:fullscreen { background:#0b0d10; display:flex; flex-direction:column; }
+  .cam:fullscreen .stage { flex:1; min-height:0; }
+  .cam:fullscreen img.main { height:100%; width:100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span> Timberline Lodge — live wall</h1>
+  <label>poll
+    <select id="iv">
+      <option value="20000" selected>20s (native cadence)</option>
+      <option value="10000">10s (aggressive)</option>
+      <option value="60000">60s (gentle)</option>
+      <option value="0">paused</option>
+    </select>
+  </label>
+  <button id="now">Poll now</button>
+  <button id="fs">Fullscreen wall</button>
+  <span class="hint" id="clock"></span>
+</header>
+<p class="hint">
+  timberlinelodge.com publishes still frames only — no HLS/RTSP/video endpoint exists publicly
+  (verified against the page source, the /snowcameras/ dir, and every cam aggregator).
+  Frames refresh server-side ~every 20s, so this wall is a ~3 fps live view. Each card also
+  buffers real frames: scrub or play them as a timelapse. Click a frame to solo-fullscreen it.
+</p>
+<div class="grid" id="grid"></div>
+<script>
+const CAMS = [
+  ["Timberline Lodge",     "lodge"],
+  ["Pucci",                "pucci"],
+  ["Magic Mile",           "FloodEast"],
+  ["Jeff Flood",           "FloodSouth"],
+  ["Palmer / Silcox",      "palmerbottom"],
+  ["Cascades (Bruno's)",   "brunotop"],
+  ["Snow Stake",           "snowstake"],
+  ["Summit Pass",          "summit"],
+];
+const BASE = "https://timberlinelodge.com/snowcameras/";
+const MAX_FRAMES = 90;          // ~30 min at 20s cadence
+const state = {};
+
+let canvasTainted = false;
+function hash(img) {
+  // Cross-origin images (e.g. when hosted on GitHub Pages) taint the canvas and
+  // getImageData throws. Detect once, then fall back to buffering every poll.
+  if (canvasTainted) return null;
+  try {
+    const c = document.createElement("canvas");
+    c.width = 64; c.height = 43;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0, 64, 43);
+    const d = g.getImageData(0, 0, 64, 43).data;
+    let h = 2166136261;
+    for (let i = 0; i < d.length; i += 16) { h ^= d[i]; h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  } catch (e) {
+    canvasTainted = true;
+    return null;
+  }
+}
+
+function thumb(img, w = 60) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = Math.round(w * 2 / 3);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+
+for (const [name, slug] of CAMS) {
+  const card = document.createElement("div");
+  card.className = "cam";
+  card.innerHTML = `
+    <div class="bar">
+      <b>${name}</b>
+      <span class="right">
+        <span class="buf" id="buf-${slug}">0 frames</span>
+        <span class="age" id="age-${slug}">…</span>
+        <a class="expand" href="${BASE}${slug}.jpg" target="_blank" rel="noopener">↗</a>
+      </span>
+    </div>
+    <div class="stage" id="stage-${slug}">
+      <img class="main" id="img-${slug}" alt="${name}" referrerpolicy="no-referrer">
+      <span class="badge" id="badge-${slug}">timelapse</span>
+    </div>
+    <div class="ctl">
+      <button data-act="play" id="play-${slug}">▶ play</button>
+      <button data-act="speed">1×</button>
+      <button data-act="live">● live</button>
+      <button data-act="save">save frame</button>
+    </div>
+    <div class="strip" id="strip-${slug}"></div>`;
+  document.getElementById("grid").appendChild(card);
+
+  state[slug] = { card, frames: [], lastHash: 0, pin: null, player: null, speed: 1, fails: 0 };
+
+  card.querySelector("#stage-" + slug).onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else card.requestFullscreen?.();
+  };
+
+  card.querySelectorAll(".ctl button").forEach(btn => {
+    btn.onclick = () => {
+      const s = state[slug];
+      const act = btn.dataset.act;
+      if (act === "play") {
+        if (s.player) { clearInterval(s.player); s.player = null; btn.textContent = "▶ play"; unpin(slug); return; }
+        if (s.frames.length < 2) return;
+        btn.textContent = "■ stop";
+        s.player = setInterval(() => {
+          const i = (s.pin === null ? 0 : s.pin) + 1;
+          show(slug, i >= s.frames.length ? 0 : i);
+        }, 1000 / s.speed);
+      } else if (act === "speed") {
+        s.speed = s.speed === 1 ? 4 : s.speed === 4 ? 15 : 1;
+        btn.textContent = s.speed + "×";
+      } else if (act === "live") {
+        clearInterval(s.player); s.player = null;
+        document.getElementById("play-" + slug).textContent = "▶ play";
+        unpin(slug);
+      } else if (act === "save") {
+        const f = s.frames[s.pin ?? s.frames.length - 1];
+        if (!f) return;
+        const a = document.createElement("a");
+        a.href = f.url; a.download = `${slug}-${f.t}.jpg`; a.click();
+      }
+    };
+  });
+}
+
+function unpin(slug) {
+  const s = state[slug];
+  s.pin = null;
+  document.getElementById("badge-" + slug).classList.remove("on");
+  document.getElementById("strip-" + slug).querySelectorAll("canvas.sel")
+    .forEach(c => c.classList.remove("sel"));
+}
+
+function show(slug, idx) {
+  const s = state[slug];
+  const f = s.frames[idx];
+  if (!f) return;
+  document.getElementById("img-" + slug).src = f.url;
+  s.pin = idx;
+  const b = document.getElementById("badge-" + slug);
+  b.textContent = "timelapse · " + new Date(f.t).toLocaleTimeString();
+  b.classList.add("on");
+  const cs = document.getElementById("strip-" + slug).querySelectorAll("canvas");
+  cs.forEach((c, i) => c.classList.toggle("sel", i === idx));
+}
+
+function poll() {
+  const t = Date.now();
+  for (const [, slug] of CAMS) {
+    const img = document.getElementById("img-" + slug);
+    const s = state[slug];
+    const probe = new Image();
+    probe.referrerPolicy = "no-referrer";
+    probe.onload = () => {
+      s.fails = 0;
+      let h = 0;
+      h = hash(probe);
+      const changed = (h === null) || (h !== s.lastHash);
+      if (h !== null) s.lastHash = h;
+      if (changed) {
+        s.frames.push({ url: probe.src, t });
+        if (s.frames.length > MAX_FRAMES) s.frames.shift();
+        const strip = document.getElementById("strip-" + slug);
+        strip.appendChild(thumb(probe));
+        while (strip.children.length > MAX_FRAMES) strip.removeChild(strip.firstChild);
+        document.getElementById("buf-" + slug).textContent = s.frames.length + " frames";
+        strip.scrollLeft = strip.width;
+        if (s.pin === null) img.src = probe.src;
+        const age = document.getElementById("age-" + slug);
+        age.textContent = canvasTainted ? "frame" : "new frame"; age.className = "age fresh";
+        setTimeout(() => { if (/frame/.test(age.textContent)) age.textContent = "live"; }, 4000);
+      } else if (s.pin === null) {
+        document.getElementById("age-" + slug).textContent = "no change";
+        document.getElementById("age-" + slug).className = "age";
+      }
+    };
+    probe.onerror = () => {
+      s.fails++;
+      const a = document.getElementById("age-" + slug);
+      a.textContent = "fetch err ×" + s.fails; a.className = "age dead";
+    };
+    probe.src = `${BASE}${slug}.jpg?_=${t}`;
+  }
+}
+
+document.getElementById("strip-" + "lodge"); // no-op guard
+for (const [, slug] of CAMS) {
+  document.getElementById("strip-" + slug).onclick = (e) => {
+    if (e.target.tagName !== "CANVAS") return;
+    const i = [...e.currentTarget.children].indexOf(e.target);
+    clearInterval(state[slug].player); state[slug].player = null;
+    document.getElementById("play-" + slug).textContent = "▶ play";
+    show(slug, i);
+  };
+}
+
+const clock = () => document.getElementById("clock").textContent =
+  new Date().toLocaleTimeString() + " local";
+clock(); setInterval(clock, 1000);
+
+let timer = null;
+function schedule() {
+  clearInterval(timer);
+  const ms = +document.getElementById("iv").value;
+  if (ms > 0) timer = setInterval(poll, ms);
+}
+document.getElementById("iv").onchange = schedule;
+document.getElementById("now").onclick = poll;
+document.getElementById("fs").onclick = () => document.documentElement.requestFullscreen?.();
+
+poll();
+schedule();
+</script>
+</body>
+</html>
