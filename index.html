@@ -3,11 +3,16 @@
 <head>
 <meta charset="utf-8">
 <title>Timberline Cams — live wall + timelapse</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin:0; padding:16px; background:#0b0d10; color:#e6e8eb;
+  body { margin:0; background:#0b0d10; color:#e6e8eb;
+         padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+                  calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
          font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:6px; }
   h1 { font-size:16px; margin:0 8px 0 0; font-weight:600; letter-spacing:.02em; }
@@ -257,6 +262,19 @@ function schedule() {
 document.getElementById("iv").onchange = schedule;
 document.getElementById("now").onclick = poll;
 document.getElementById("fs").onclick = () => document.documentElement.requestFullscreen?.();
+
+// iOS standalone (home-screen) apps boot with a stale layout viewport and stay
+// zoomed/misaligned until WebKit is forced to recompute. Rewriting the viewport
+// meta on every pageshow is the standard workaround; harmless in Safari proper.
+function nudgeViewport() {
+  const m = document.querySelector("meta[name=viewport]");
+  if (!m) return;
+  const base = "width=device-width, initial-scale=1, viewport-fit=cover";
+  m.content = base + ", minimum-scale=1";
+  requestAnimationFrame(() => { m.content = base; });
+}
+window.addEventListener("pageshow", nudgeViewport);
+window.addEventListener("load", nudgeViewport);
 
 poll();
 schedule();
